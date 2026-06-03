@@ -1,0 +1,9 @@
+{
+  "short_name": "SyncBeat",
+  "name": "SyncBeat – Listen Together",
+  "icons": [],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#7c3aed",
+  "background_color": "#0a0a0f"
+}
