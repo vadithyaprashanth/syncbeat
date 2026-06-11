@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const rateLimit = require('express-rate-limit');
+const passport = require('passport');
 const { auth, adminOnly } = require('../middleware/auth');
 const authCtrl = require('../controllers/authController');
 const songsCtrl = require('../controllers/songsController');
@@ -12,20 +13,20 @@ const authLimiter = rateLimit({
   message: { error: 'Too many requests, try again later' },
 });
 
-const otpLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 3,
-  message: { error: 'Too many OTP requests, wait a minute' },
-});
-
 // ── Auth ──────────────────────────────────────────────────────────────────
-router.post('/auth/register',        authLimiter, authCtrl.register);
-router.post('/auth/verify-otp',      authLimiter, authCtrl.verifyOTP);
-router.post('/auth/resend-otp',      otpLimiter,  authCtrl.resendOTP);
-router.post('/auth/login',           authLimiter, authCtrl.login);
-router.post('/auth/forgot-password', otpLimiter,  authCtrl.forgotPassword);
-router.post('/auth/reset-password',  authLimiter, authCtrl.resetPassword);
-router.get( '/auth/me',              auth,        authCtrl.getMe);
+router.post('/auth/register', authLimiter, authCtrl.register);
+router.post('/auth/login',    authLimiter, authCtrl.login);
+router.get( '/auth/me',       auth,        authCtrl.getMe);
+
+// ── Google OAuth ──────────────────────────────────────────────────────────
+router.get('/auth/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+router.get('/auth/google/callback',
+  passport.authenticate('google', { failureRedirect: '/auth?error=google_failed', session: false }),
+  authCtrl.googleCallback
+);
 
 // ── Songs ─────────────────────────────────────────────────────────────────
 router.get(   '/songs',          auth,                         songsCtrl.getSongs);

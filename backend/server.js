@@ -3,6 +3,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const session = require('express-session');
+const passport = require('./config/passport');
 const { initDB } = require('./config/db');
 const routes = require('./routes/index');
 const setupSocket = require('./socket/index');
@@ -29,6 +31,18 @@ app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Session (required for passport)
+app.use(session({
+  secret: process.env.JWT_SECRET || 'syncbeat_session_secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: process.env.NODE_ENV === 'production' },
+}));
+
+// Passport
+app.use(passport.initialize());
+app.use(passport.session());
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
@@ -44,7 +58,6 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Internal server error' });
 });
 
-// Setup socket
 setupSocket(io);
 
 const PORT = process.env.PORT || 5000;
@@ -53,7 +66,7 @@ const start = async () => {
   try {
     await initDB();
     server.listen(PORT, () => {
-      console.log(`🚀 SyncBeat server running on port ${PORT}`);
+      console.log(`SyncBeat server running on port ${PORT}`);
     });
   } catch (err) {
     console.error('Failed to start server:', err);
