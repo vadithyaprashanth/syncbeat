@@ -7,11 +7,7 @@ const authCtrl = require('../controllers/authController');
 const songsCtrl = require('../controllers/songsController');
 const sessionsCtrl = require('../controllers/sessionsController');
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many requests, try again later' },
-});
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 20, message: { error: 'Too many requests' } });
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 router.post('/auth/register', authLimiter, authCtrl.register);
@@ -22,9 +18,8 @@ router.get( '/auth/me',       auth,        authCtrl.getMe);
 router.get('/auth/google',
   passport.authenticate('google', { scope: ['profile', 'email'] })
 );
-
 router.get('/auth/google/callback',
-  passport.authenticate('google', { failureRedirect: '/auth?error=google_failed', session: false }),
+  passport.authenticate('google', { failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=google_failed`, session: false }),
   authCtrl.googleCallback
 );
 
@@ -36,12 +31,13 @@ router.delete('/songs/:id',      auth, adminOnly,              songsCtrl.deleteS
 router.post(  '/songs/:id/play', auth,                         songsCtrl.incrementPlay);
 
 // ── Sessions ──────────────────────────────────────────────────────────────
-router.get(   '/sessions',           auth, sessionsCtrl.getSessions);
-router.post(  '/sessions',           auth, sessionsCtrl.createSession);
-router.get(   '/sessions/:id',       auth, sessionsCtrl.getSession);
-router.post(  '/sessions/:id/join',  auth, sessionsCtrl.joinSession);
-router.post(  '/sessions/:id/leave', auth, sessionsCtrl.leaveSession);
-router.delete('/sessions/:id',       auth, sessionsCtrl.endSession);
+router.get(   '/sessions',              auth, sessionsCtrl.getSessions);
+router.post(  '/sessions',              auth, sessionsCtrl.createSession);
+router.post(  '/sessions/join-by-code', auth, sessionsCtrl.joinSessionByCode);
+router.get(   '/sessions/:id',          auth, sessionsCtrl.getSession);
+router.post(  '/sessions/:id/join',     auth, sessionsCtrl.joinSession);
+router.post(  '/sessions/:id/leave',    auth, sessionsCtrl.leaveSession);
+router.delete('/sessions/:id',          auth, sessionsCtrl.endSession);
 
 // ── Admin ─────────────────────────────────────────────────────────────────
 router.get(   '/admin/stats',     auth, adminOnly, sessionsCtrl.getStats);
