@@ -4,7 +4,7 @@ import { io } from 'socket.io-client';
 import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 
-const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) => {
+const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, setSeekTo }) => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user, token } = useAuth();
@@ -21,6 +21,9 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
 
   const socketRef = useRef(null);
   const chatEndRef = useRef(null);
+  const isHostRef = useRef(false);
+
+  useEffect(() => { isHostRef.current = isHost; }, [isHost]);
 
   useEffect(() => {
     const socket = io(process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000', {
@@ -33,12 +36,20 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
 
     socket.on('session-state', (data) => {
       setSession(data);
-      setIsHost(data.host_id === user.id);
+      const hostStatus = data.host_id === user.id;
+      setIsHost(hostStatus);
+      isHostRef.current = hostStatus;
 
-      // ✅ KEY FIX: sync current song to all members on join
+      // ✅ Sync current song to member immediately on join
       if (data.currentSong) {
         setCurrentSong(data.currentSong);
-        setIsPlaying(data.is_playing || false);
+        // Small delay to let audio load before setting play state
+        setTimeout(() => {
+          setIsPlaying(data.is_playing || false);
+          if (data.current_position > 0 && setSeekTo) {
+            setSeekTo(data.current_position);
+          }
+        }, 500);
       }
 
       if (data.chatHistory?.length > 0) {
@@ -61,17 +72,18 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
       addSystemMsg(`${u.name} left`);
     });
 
-    // ✅ KEY FIX: sync play/pause to all members
-    socket.on('playback-sync', ({ isPlaying: ip }) => {
+    // ✅ Sync play/pause to ALL members
+    socket.on('playback-sync', ({ isPlaying: ip, currentPosition }) => {
       if (ip !== undefined) setIsPlaying(ip);
+      if (currentPosition !== undefined && setSeekTo) setSeekTo(currentPosition);
     });
 
-    // ✅ KEY FIX: sync song change to all members immediately
+    // ✅ Sync song change to ALL members
     socket.on('song-changed', ({ song, changedBy }) => {
       setCurrentSong(song);
-      setIsPlaying(true);
+      setTimeout(() => setIsPlaying(true), 300);
       if (changedBy !== user.name) {
-        addSystemMsg(`${changedBy} changed song to: ${song.title}`);
+        addSystemMsg(`Now playing: ${song.title}`);
       }
     });
 
@@ -97,7 +109,9 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
         setSession(sessRes.data.session);
         setMembers(sessRes.data.members);
         setSongs(songsRes.data.songs);
-        setIsHost(sessRes.data.session.host_id === user.id);
+        const hostStatus = sessRes.data.session.host_id === user.id;
+        setIsHost(hostStatus);
+        isHostRef.current = hostStatus;
       } catch (err) {
         navigate('/sync');
       } finally {
@@ -118,14 +132,14 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
   };
 
   const handlePlayPause = () => {
-    if (!isHost && user.role !== 'admin') return;
+    if (!isHostRef.current && user.role !== 'admin') return;
     const next = !isPlaying;
     setIsPlaying(next);
     socketRef.current?.emit('playback-update', { sessionId: id, isPlaying: next });
   };
 
   const handleChangeSong = (song) => {
-    if (!isHost && user.role !== 'admin') return;
+    if (!isHostRef.current && user.role !== 'admin') return;
     socketRef.current?.emit('change-song', { sessionId: id, songId: song.id });
   };
 
@@ -138,12 +152,16 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
 
   const handleLeave = async () => {
     await api.post(`/sessions/${id}/leave`).catch(() => {});
+    setCurrentSong(null);
+    setIsPlaying(false);
     navigate('/sync');
   };
 
   const handleEnd = async () => {
     if (!window.confirm('End this session for everyone?')) return;
     await api.delete(`/sessions/${id}`).catch(() => {});
+    setCurrentSong(null);
+    setIsPlaying(false);
     navigate('/sync');
   };
 
@@ -165,25 +183,23 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
             <div className="session-live-dot" />
             <h1 className="font-display" style={{ fontSize: 20 }}>{session?.name}</h1>
             {isHost && <span className="badge badge-purple">HOST</span>}
-          </div>
-          <div className="flex items-center gap-1" style={{ marginTop: 4 }}>
-            <p className="text-muted" style={{ fontSize: 13 }}>
-              Hosted by {session?.host_name} · {members.length} listening
-            </p>
             {session?.code && (
               <span
+                onClick={() => copyText(session.code, 'code')}
                 style={{
                   background: 'var(--purple-dim)', color: 'var(--purple-light)',
-                  borderRadius: 6, padding: '2px 10px', fontSize: 13,
-                  letterSpacing: 3, fontWeight: 800, cursor: 'pointer',
+                  borderRadius: 6, padding: '2px 12px', fontSize: 14,
+                  letterSpacing: 4, fontWeight: 900, cursor: 'pointer',
                 }}
-                onClick={() => copyText(session.code, 'code')}
-                title="Click to copy code"
+                title="Click to copy session code"
               >
                 {session.code} {copied === 'code' ? '✓' : ''}
               </span>
             )}
           </div>
+          <p className="text-muted" style={{ fontSize: 13, marginTop: 4 }}>
+            Hosted by {session?.host_name} · {members.length} listening
+          </p>
         </div>
         <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-sm"
@@ -211,7 +227,9 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
                 alt={currentSong.title}
                 className="now-playing-cover"
               />
-              <h2 className="font-display" style={{ fontSize: 22, marginBottom: 4 }}>{currentSong.title}</h2>
+              <h2 className="font-display" style={{ fontSize: 22, marginBottom: 4 }}>
+                {currentSong.title}
+              </h2>
               <p className="text-muted">{currentSong.artist || 'Unknown Artist'}</p>
 
               {(isHost || user.role === 'admin') ? (
@@ -220,10 +238,22 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
                 </button>
               ) : (
                 <div style={{ marginTop: 16, textAlign: 'center' }}>
-                  <p style={{ fontSize: 13, color: 'var(--accent)' }}>
-                    {isPlaying ? 'Now Playing' : 'Paused'}
-                  </p>
-                  <p className="text-muted" style={{ fontSize: 12, marginTop: 4 }}>
+                  <div style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 8,
+                    background: isPlaying ? 'rgba(6,214,160,0.1)' : 'rgba(124,58,237,0.1)',
+                    border: `1px solid ${isPlaying ? 'var(--accent)' : 'var(--purple)'}`,
+                    borderRadius: 8, padding: '8px 16px',
+                  }}>
+                    <div style={{
+                      width: 8, height: 8, borderRadius: '50%',
+                      background: isPlaying ? 'var(--accent)' : 'var(--purple)',
+                      animation: isPlaying ? 'pulse 1s infinite' : 'none',
+                    }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, color: isPlaying ? 'var(--accent)' : 'var(--purple-light)' }}>
+                      {isPlaying ? 'Synced & Playing' : 'Synced & Paused'}
+                    </span>
+                  </div>
+                  <p className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>
                     Host controls playback for everyone
                   </p>
                 </div>
@@ -232,10 +262,16 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
           ) : (
             <div className="empty-state">
               <div style={{ fontSize: 48 }}>🎵</div>
-              <p>{isHost
-                ? 'Pick a song from the Queue tab to start playing for everyone'
-                : 'Waiting for host to start playing...'
-              }</p>
+              <p style={{ marginBottom: 8 }}>
+                {isHost
+                  ? 'Select a song from the Queue to start playing for everyone'
+                  : 'Waiting for host to start playing...'}
+              </p>
+              {!isHost && (
+                <p style={{ fontSize: 12, color: 'var(--muted)' }}>
+                  The song will automatically appear here when the host starts playing
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -259,9 +295,8 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
             <div className="panel-content">
               {!isHost && user.role !== 'admin' && (
                 <p style={{
-                  fontSize: 11, color: 'var(--muted)',
-                  padding: '8px 12px', borderBottom: '1px solid var(--border)',
-                  background: 'var(--bg3)'
+                  fontSize: 11, color: 'var(--muted)', padding: '8px 12px',
+                  borderBottom: '1px solid var(--border)', background: 'var(--bg3)',
                 }}>
                   Only the host can select songs
                 </p>
@@ -284,7 +319,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong }) =
                     <p style={{ fontSize: 12, color: 'var(--muted)' }}>{song.artist || 'Unknown'}</p>
                   </div>
                   {currentSong?.id === song.id && (
-                    <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 600 }}>
+                    <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 700 }}>
                       {isPlaying ? 'PLAYING' : 'PAUSED'}
                     </span>
                   )}

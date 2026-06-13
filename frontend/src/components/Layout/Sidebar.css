@@ -2,7 +2,7 @@
   position: fixed;
   top: 0; left: 0;
   width: var(--sidebar);
-  height: 100vh;
+  height: calc(100vh - var(--player-h));
   background: var(--bg2);
   border-right: 1px solid var(--border);
   display: flex;
@@ -61,7 +61,8 @@
   gap: 10px;
   padding: 12px 8px;
   border-top: 1px solid var(--border);
-  margin-top: 8px;
+  margin-top: auto;
+  flex-shrink: 0;
 }
 .user-avatar {
   width: 34px; height: 34px;

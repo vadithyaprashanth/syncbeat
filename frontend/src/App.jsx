@@ -1,4 +1,3 @@
-import './pages/pages.css';
 import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -11,9 +10,13 @@ import SessionRoom from './pages/SessionRoom';
 import AdminPage from './pages/AdminPage';
 import Auth from './pages/Auth';
 import './App.css';
+import './pages/pages.css';
 
+// Suppress unhandled 401 promise errors from showing as overlays
 window.addEventListener('unhandledrejection', (e) => {
-  if (e.reason?.response?.status === 401) e.preventDefault();
+  if (e.reason?.response?.status === 401 || e.reason?.response?.status === 403) {
+    e.preventDefault();
+  }
 });
 
 const ProtectedLayout = () => {
@@ -21,11 +24,17 @@ const ProtectedLayout = () => {
   const [currentSong, setCurrentSong] = useState(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [queue, setQueue] = useState([]);
+  const [seekTo, setSeekTo] = useState(null);
 
   if (loading) return <div className="page-loader"><div className="spinner" /></div>;
   if (!user) return <Navigate to="/auth" replace />;
 
-  const playerProps = { currentSong, setCurrentSong, isPlaying, setIsPlaying, queue, setQueue };
+  const playerProps = {
+    currentSong, setCurrentSong,
+    isPlaying, setIsPlaying,
+    queue, setQueue,
+    setSeekTo,
+  };
 
   const handleNext = () => {
     if (!queue.length || !currentSong) return;
@@ -62,6 +71,7 @@ const ProtectedLayout = () => {
         setIsPlaying={setIsPlaying}
         onNext={handleNext}
         onPrev={handlePrev}
+        seekTo={seekTo}
       />
     </div>
   );
@@ -72,7 +82,7 @@ const App = () => (
     <BrowserRouter>
       <Routes>
         <Route path="/auth" element={<AuthRoute />} />
-<Route path="/auth/callback" element={<AuthRoute />} />
+        <Route path="/auth/callback" element={<AuthRoute />} />
         <Route path="/*" element={<ProtectedLayout />} />
       </Routes>
     </BrowserRouter>
