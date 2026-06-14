@@ -9,46 +9,74 @@ const fmt = (s) => {
   return `${m}:${sec.toString().padStart(2, '0')}`;
 };
 
-const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo, onTimeUpdate }) => {
+const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) => {
   const audioRef = useRef(null);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
   const playCountedRef = useRef(false);
-  const prevSongRef = useRef(null);
+  const prevSongIdRef = useRef(null);
+  const pendingPlayRef = useRef(false);
 
-  // Load new song when it changes
+  // ── When song changes: load it, then play if needed ──────────────────
   useEffect(() => {
-    if (!audioRef.current || !song) return;
-    if (prevSongRef.current !== song.id) {
-      prevSongRef.current = song.id;
-      audioRef.current.src = song.cloudinary_url;
-      audioRef.current.load();
-      setCurrent(0);
-      playCountedRef.current = false;
-      if (isPlaying) {
-        audioRef.current.play().catch(e => console.warn('Autoplay blocked:', e));
-      }
+    if (!song || !audioRef.current) return;
+    if (prevSongIdRef.current === song.id) return; // same song, skip
+
+    console.log('[PlayerBar] New song detected:', song.title, song.cloudinary_url);
+    prevSongIdRef.current = song.id;
+    playCountedRef.current = false;
+    pendingPlayRef.current = isPlaying; // remember if we should play after load
+
+    audioRef.current.pause();
+    audioRef.current.src = song.cloudinary_url;
+    audioRef.current.load();
+    setCurrent(0);
+    setDuration(0);
+  }, [song?._ts || song?.id]);
+
+  // ── When audio is ready to play ───────────────────────────────────────
+  const handleCanPlay = () => {
+    console.log('[PlayerBar] canplay fired. pendingPlay:', pendingPlayRef.current, 'isPlaying:', isPlaying);
+    if (pendingPlayRef.current || isPlaying) {
+      audioRef.current?.play().then(() => {
+        console.log('[PlayerBar] Playing successfully');
+        pendingPlayRef.current = false;
+      }).catch(e => {
+        console.warn('[PlayerBar] Play failed:', e.message);
+      });
     }
-  }, [song]);
+  };
 
-  // Handle play/pause changes
+  // ── When isPlaying changes externally (from socket sync) ─────────────
   useEffect(() => {
     if (!audioRef.current || !song) return;
+    console.log('[PlayerBar] isPlaying changed to:', isPlaying);
     if (isPlaying) {
-      audioRef.current.play().catch(e => console.warn('Play failed:', e));
+      pendingPlayRef.current = true;
+      audioRef.current.play().then(() => {
+        pendingPlayRef.current = false;
+        console.log('[PlayerBar] Play from isPlaying effect succeeded');
+      }).catch(e => {
+        console.warn('[PlayerBar] Play from isPlaying effect failed:', e.message);
+        // Audio not ready yet — pendingPlayRef will handle it in canplay
+      });
     } else {
+      pendingPlayRef.current = false;
       audioRef.current.pause();
     }
   }, [isPlaying]);
 
-  // Handle external seek (from sync)
+  // ── Seek to position (from sync) ──────────────────────────────────────
   useEffect(() => {
-    if (!audioRef.current || seekTo === undefined || seekTo === null) return;
-    audioRef.current.currentTime = seekTo;
+    if (seekTo !== null && seekTo !== undefined && seekTo > 0 && audioRef.current) {
+      console.log('[PlayerBar] Seeking to:', seekTo);
+      audioRef.current.currentTime = seekTo;
+    }
   }, [seekTo]);
 
+  // ── Volume ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = muted ? 0 : volume;
   }, [volume, muted]);
@@ -56,7 +84,6 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo, onTi
   const handleTimeUpdate = () => {
     const t = audioRef.current?.currentTime || 0;
     setCurrent(t);
-    if (onTimeUpdate) onTimeUpdate(t);
     if (t > 30 && !playCountedRef.current && song) {
       playCountedRef.current = true;
       api.post(`/songs/${song.id}/play`).catch(() => {});
@@ -81,11 +108,14 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo, onTi
       <audio
         ref={audioRef}
         onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
-        onEnded={onNext}
-        onCanPlay={() => {
-          if (isPlaying) audioRef.current?.play().catch(() => {});
+        onLoadedMetadata={() => {
+          const d = audioRef.current?.duration || 0;
+          console.log('[PlayerBar] Metadata loaded. Duration:', d);
+          setDuration(d);
         }}
+        onCanPlay={handleCanPlay}
+        onEnded={onNext}
+        onError={(e) => console.error('[PlayerBar] Audio error:', e)}
       />
 
       <div className="player-info">
@@ -98,11 +128,11 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo, onTi
 
       <div className="player-controls">
         <div className="player-buttons">
-          <button className="ctrl-btn" onClick={onPrev}>prev</button>
+          <button className="ctrl-btn" onClick={onPrev}>⏮</button>
           <button className="ctrl-btn play" onClick={() => setIsPlaying(!isPlaying)}>
-            {isPlaying ? 'II' : '▶'}
+            {isPlaying ? '⏸' : '▶'}
           </button>
-          <button className="ctrl-btn" onClick={onNext}>next</button>
+          <button className="ctrl-btn" onClick={onNext}>⏭</button>
         </div>
         <div className="player-seek">
           <span className="time">{fmt(current)}</span>
@@ -116,7 +146,7 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo, onTi
 
       <div className="player-volume">
         <button className="ctrl-btn" onClick={() => setMuted(!muted)}>
-          {muted || volume === 0 ? 'mute' : 'vol'}
+          {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
         </button>
         <input type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume}
           onChange={(e) => { setVolume(parseFloat(e.target.value)); setMuted(false); }}
