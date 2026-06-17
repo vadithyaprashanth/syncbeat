@@ -1,9 +1,10 @@
-import { io } from 'socket.io-client';
+
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { io } from 'socket.io-client';
+
 import api from '../utils/api';
 import { useAuth } from '../context/AuthContext';
+/* global io */
 
 const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, setSeekTo }) => {
   const { id } = useParams();
