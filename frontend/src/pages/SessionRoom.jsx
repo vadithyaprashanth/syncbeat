@@ -1,3 +1,4 @@
+import { io } from 'socket.io-client';
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
