@@ -21,7 +21,8 @@ const setupSocket = (server) => {
       if (!token) return next(new Error('Authentication required'));
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const result = await pool.query(
-        'SELECT id, name, email, role FROM users WHERE id = $1', [decoded.userId]
+        'SELECT id, name, email, role FROM users WHERE id = $1',
+        [decoded.userId]
       );
       if (!result.rows.length) return next(new Error('User not found'));
       socket.user = result.rows[0];
@@ -36,7 +37,8 @@ const setupSocket = (server) => {
 
     socket.on('join-session', async ({ sessionId }) => {
       try {
-        // Get session with full song details
+        console.log(`${socket.user.name} joining session ${sessionId}`);
+
         const session = await pool.query(
           `SELECT s.*,
             so.id as song_id,
@@ -51,13 +53,13 @@ const setupSocket = (server) => {
         );
 
         if (!session.rows.length) {
+          console.log(`Session ${sessionId} not found`);
           socket.emit('error', { message: 'Session not found' });
           return;
         }
 
         const sess = session.rows[0];
 
-        // Add to members
         await pool.query(
           `INSERT INTO session_members (session_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
           [sessionId, socket.user.id]
@@ -66,30 +68,27 @@ const setupSocket = (server) => {
         socket.join(`session:${sessionId}`);
         socket.currentSessionId = sessionId;
 
-        // Get chat history
         const history = await pool.query(
           `SELECT id, user_id, user_name, message, created_at
            FROM session_messages WHERE session_id = $1 ORDER BY created_at ASC`,
           [sessionId]
         );
 
-        // Get member list
         const memberList = await pool.query(
           `SELECT u.id, u.name FROM session_members sm
            JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
           [sessionId]
         );
 
-        // Build currentSong object — this is what member needs to play
         const currentSong = sess.song_id ? {
           id: sess.song_id,
           title: sess.song_title,
           artist: sess.song_artist,
           cover_url: sess.song_cover_url,
-          cloudinary_url: sess.song_cloudinary_url,  // ← CRITICAL field
+          cloudinary_url: sess.song_cloudinary_url,
         } : null;
 
-        console.log(`${socket.user.name} joined. currentSong:`, currentSong?.title, '| url:', currentSong?.cloudinary_url?.substring(0, 50));
+        console.log(`Sending session-state to ${socket.user.name}. Song: ${currentSong?.title || 'none'}`);
 
         socket.emit('session-state', {
           sessionId,
@@ -108,30 +107,34 @@ const setupSocket = (server) => {
           user: { id: socket.user.id, name: socket.user.name },
           members: memberList.rows,
         });
+
       } catch (err) {
         console.error('join-session error:', err.message);
-        socket.emit('error', { message: 'Failed to join session' });
+        console.error(err.stack);
+        socket.emit('error', { message: 'Failed to join session: ' + err.message });
       }
     });
 
     socket.on('leave-session', async ({ sessionId }) => {
-      socket.leave(`session:${sessionId}`);
-      await pool.query(
-        'DELETE FROM session_members WHERE session_id = $1 AND user_id = $2',
-        [sessionId, socket.user.id]
-      ).catch(() => {});
-
-      const memberList = await pool.query(
-        `SELECT u.id, u.name FROM session_members sm
-         JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
-        [sessionId]
-      ).catch(() => ({ rows: [] }));
-
-      socket.to(`session:${sessionId}`).emit('user-left', {
-        user: { id: socket.user.id, name: socket.user.name },
-        members: memberList.rows,
-      });
-      socket.currentSessionId = null;
+      try {
+        socket.leave(`session:${sessionId}`);
+        await pool.query(
+          'DELETE FROM session_members WHERE session_id = $1 AND user_id = $2',
+          [sessionId, socket.user.id]
+        );
+        const memberList = await pool.query(
+          `SELECT u.id, u.name FROM session_members sm
+           JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
+          [sessionId]
+        );
+        socket.to(`session:${sessionId}`).emit('user-left', {
+          user: { id: socket.user.id, name: socket.user.name },
+          members: memberList.rows,
+        });
+        socket.currentSessionId = null;
+      } catch (err) {
+        console.error('leave-session error:', err.message);
+      }
     });
 
     socket.on('playback-update', async ({ sessionId, isPlaying, currentPosition }) => {
@@ -142,17 +145,15 @@ const setupSocket = (server) => {
           socket.emit('error', { message: 'Only the host can control playback' });
           return;
         }
-
         const updates = []; const params = []; let i = 1;
         if (isPlaying !== undefined) { updates.push(`is_playing = $${i++}`); params.push(isPlaying); }
         if (currentPosition !== undefined) { updates.push(`current_position = $${i++}`); params.push(currentPosition); }
         updates.push('updated_at = NOW()');
         params.push(sessionId);
-
         await pool.query(`UPDATE sessions SET ${updates.join(', ')} WHERE id = $${i}`, params);
-
         io.to(`session:${sessionId}`).emit('playback-sync', { isPlaying, currentPosition });
       } catch (err) {
+        console.error('playback-update error:', err.message);
         socket.emit('error', { message: 'Playback update failed' });
       }
     });
@@ -161,27 +162,21 @@ const setupSocket = (server) => {
       try {
         const [session, songResult] = await Promise.all([
           pool.query('SELECT host_id FROM sessions WHERE id = $1', [sessionId]),
-          // Get FULL song with cloudinary_url
           pool.query('SELECT id, title, artist, cover_url, cloudinary_url FROM songs WHERE id = $1', [songId]),
         ]);
-
         if (!session.rows.length || !songResult.rows.length) return;
         if (session.rows[0].host_id !== socket.user.id && socket.user.role !== 'admin') {
           socket.emit('error', { message: 'Only the host can change songs' });
           return;
         }
-
         const song = songResult.rows[0];
-        console.log(`Song change: ${song.title} | url: ${song.cloudinary_url?.substring(0, 50)}`);
-
+        console.log(`Song change to: ${song.title}`);
         await pool.query(
           `UPDATE sessions SET current_song_id = $1, current_position = 0, is_playing = TRUE, updated_at = NOW() WHERE id = $2`,
           [songId, sessionId]
         );
-
-        // Broadcast full song object with cloudinary_url to ALL members
         io.to(`session:${sessionId}`).emit('song-changed', {
-          song,  // contains id, title, artist, cover_url, cloudinary_url
+          song,
           changedBy: socket.user.name,
         });
       } catch (err) {
@@ -207,27 +202,29 @@ const setupSocket = (server) => {
           createdAt: saved.rows[0].created_at,
         });
       } catch (err) {
-        socket.emit('error', { message: 'Failed to send message' });
+        console.error('chat-message error:', err.message);
       }
     });
 
     socket.on('disconnect', async () => {
-      if (socket.currentSessionId) {
-        await pool.query(
-          'DELETE FROM session_members WHERE session_id = $1 AND user_id = $2',
-          [socket.currentSessionId, socket.user.id]
-        ).catch(() => {});
-
-        const memberList = await pool.query(
-          `SELECT u.id, u.name FROM session_members sm
-           JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
-          [socket.currentSessionId]
-        ).catch(() => ({ rows: [] }));
-
-        socket.to(`socket.currentSessionId`).emit('user-left', {
-          user: { id: socket.user.id, name: socket.user.name },
-          members: memberList.rows,
-        });
+      try {
+        if (socket.currentSessionId) {
+          await pool.query(
+            'DELETE FROM session_members WHERE session_id = $1 AND user_id = $2',
+            [socket.currentSessionId, socket.user.id]
+          );
+          const memberList = await pool.query(
+            `SELECT u.id, u.name FROM session_members sm
+             JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
+            [socket.currentSessionId]
+          );
+          socket.to(`session:${socket.currentSessionId}`).emit('user-left', {
+            user: { id: socket.user.id, name: socket.user.name },
+            members: memberList.rows,
+          });
+        }
+      } catch (err) {
+        console.error('disconnect error:', err.message);
       }
       console.log(`Disconnected: ${socket.user?.name}`);
     });
