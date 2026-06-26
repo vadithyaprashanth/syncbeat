@@ -5,14 +5,12 @@ const setupSocket = (server) => {
   const { Server } = require('socket.io');
   const io = new Server(server, {
     cors: {
-      origin: [
-        process.env.FRONTEND_URL || 'http://localhost:3000',
-        'http://localhost:3000',
-        'https://syncbeat-olive.vercel.app',
-      ],
+      origin: '*',
       methods: ['GET', 'POST'],
       credentials: true,
     },
+    pingTimeout: 60000,
+    pingInterval: 25000,
   });
 
   io.use(async (socket, next) => {
@@ -33,7 +31,7 @@ const setupSocket = (server) => {
   });
 
   io.on('connection', (socket) => {
-    console.log(`Connected: ${socket.user.name}`);
+    console.log(`Connected: ${socket.user.name} (${socket.id})`);
 
     socket.on('join-session', async ({ sessionId }) => {
       try {
@@ -53,7 +51,7 @@ const setupSocket = (server) => {
         );
 
         if (!session.rows.length) {
-          console.log(`Session ${sessionId} not found`);
+          console.log(`Session ${sessionId} not found or inactive`);
           socket.emit('error', { message: 'Session not found' });
           return;
         }
@@ -61,22 +59,34 @@ const setupSocket = (server) => {
         const sess = session.rows[0];
 
         await pool.query(
-          `INSERT INTO session_members (session_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          `INSERT INTO session_members (session_id, user_id)
+           VALUES ($1, $2) ON CONFLICT DO NOTHING`,
           [sessionId, socket.user.id]
         );
 
         socket.join(`session:${sessionId}`);
         socket.currentSessionId = sessionId;
 
-        const history = await pool.query(
-          `SELECT id, user_id, user_name, message, created_at
-           FROM session_messages WHERE session_id = $1 ORDER BY created_at ASC`,
-          [sessionId]
-        );
+        let chatHistory = [];
+        try {
+          const history = await pool.query(
+            `SELECT id, user_id, user_name, message, created_at
+             FROM session_messages
+             WHERE session_id = $1
+             ORDER BY created_at ASC
+             LIMIT 100`,
+            [sessionId]
+          );
+          chatHistory = history.rows;
+        } catch (e) {
+          console.warn('chat history error:', e.message);
+        }
 
         const memberList = await pool.query(
-          `SELECT u.id, u.name FROM session_members sm
-           JOIN users u ON sm.user_id = u.id WHERE sm.session_id = $1`,
+          `SELECT u.id, u.name
+           FROM session_members sm
+           JOIN users u ON sm.user_id = u.id
+           WHERE sm.session_id = $1`,
           [sessionId]
         );
 
@@ -88,7 +98,7 @@ const setupSocket = (server) => {
           cloudinary_url: sess.song_cloudinary_url,
         } : null;
 
-        console.log(`Sending session-state to ${socket.user.name}. Song: ${currentSong?.title || 'none'}`);
+        console.log(`Sending session-state to ${socket.user.name}. Song: ${currentSong?.title || 'none'} | Playing: ${sess.is_playing}`);
 
         socket.emit('session-state', {
           sessionId,
@@ -97,10 +107,10 @@ const setupSocket = (server) => {
           host_id: sess.host_id,
           code: sess.code,
           is_playing: sess.is_playing,
-          current_position: sess.current_position,
+          current_position: sess.current_position || 0,
           current_song_id: sess.current_song_id,
           currentSong,
-          chatHistory: history.rows,
+          chatHistory,
         });
 
         socket.to(`session:${sessionId}`).emit('user-joined', {
@@ -109,9 +119,9 @@ const setupSocket = (server) => {
         });
 
       } catch (err) {
-        console.error('join-session error:', err.message);
+        console.error('join-session ERROR:', err.message);
         console.error(err.stack);
-        socket.emit('error', { message: 'Failed to join session: ' + err.message });
+        socket.emit('error', { message: 'Failed to join: ' + err.message });
       }
     });
 
@@ -139,7 +149,9 @@ const setupSocket = (server) => {
 
     socket.on('playback-update', async ({ sessionId, isPlaying, currentPosition }) => {
       try {
-        const session = await pool.query('SELECT host_id FROM sessions WHERE id = $1', [sessionId]);
+        const session = await pool.query(
+          'SELECT host_id FROM sessions WHERE id = $1', [sessionId]
+        );
         if (!session.rows.length) return;
         if (session.rows[0].host_id !== socket.user.id && socket.user.role !== 'admin') {
           socket.emit('error', { message: 'Only the host can control playback' });
@@ -150,11 +162,14 @@ const setupSocket = (server) => {
         if (currentPosition !== undefined) { updates.push(`current_position = $${i++}`); params.push(currentPosition); }
         updates.push('updated_at = NOW()');
         params.push(sessionId);
-        await pool.query(`UPDATE sessions SET ${updates.join(', ')} WHERE id = $${i}`, params);
+        await pool.query(
+          `UPDATE sessions SET ${updates.join(', ')} WHERE id = $${i}`,
+          params
+        );
         io.to(`session:${sessionId}`).emit('playback-sync', { isPlaying, currentPosition });
+        console.log(`Playback update: ${isPlaying} for session ${sessionId}`);
       } catch (err) {
         console.error('playback-update error:', err.message);
-        socket.emit('error', { message: 'Playback update failed' });
       }
     });
 
@@ -162,7 +177,10 @@ const setupSocket = (server) => {
       try {
         const [session, songResult] = await Promise.all([
           pool.query('SELECT host_id FROM sessions WHERE id = $1', [sessionId]),
-          pool.query('SELECT id, title, artist, cover_url, cloudinary_url FROM songs WHERE id = $1', [songId]),
+          pool.query(
+            'SELECT id, title, artist, cover_url, cloudinary_url FROM songs WHERE id = $1',
+            [songId]
+          ),
         ]);
         if (!session.rows.length || !songResult.rows.length) return;
         if (session.rows[0].host_id !== socket.user.id && socket.user.role !== 'admin') {
@@ -170,7 +188,7 @@ const setupSocket = (server) => {
           return;
         }
         const song = songResult.rows[0];
-        console.log(`Song change to: ${song.title}`);
+        console.log(`Song change: ${song.title} | URL: ${song.cloudinary_url?.substring(0, 60)}`);
         await pool.query(
           `UPDATE sessions SET current_song_id = $1, current_position = 0, is_playing = TRUE, updated_at = NOW() WHERE id = $2`,
           [songId, sessionId]
