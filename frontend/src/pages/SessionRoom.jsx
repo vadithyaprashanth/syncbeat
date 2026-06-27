@@ -47,18 +47,16 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
       console.log('[Session] Socket connected:', socket.id);
       setSyncStatus('Connected');
       socket.emit('join-session', { sessionId: id });
-      console.log('[Session] Emitted join-session for:', id);
     });
 
     socket.on('session-state', (data) => {
-      console.log('[Session] session-state received:', data.name, '| song:', data.currentSong?.title, '| playing:', data.is_playing);
+      console.log('[Session] session-state:', data.name, '| song:', data.currentSong?.title, '| playing:', data.is_playing);
       setSession(data);
       const hostStatus = data.host_id === user.id;
       setIsHost(hostStatus);
       isHostRef.current = hostStatus;
 
       if (data.currentSong?.cloudinary_url) {
-        console.log('[Session] Setting song:', data.currentSong.title, data.currentSong.cloudinary_url.substring(0, 50));
         setSyncStatus(`Syncing: ${data.currentSong.title}`);
         setCurrentSong({ ...data.currentSong });
         setTimeout(() => {
@@ -125,11 +123,19 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     });
 
     socket.on('error', ({ message }) => {
-      console.error('[Session] socket error:', message);
+      console.error('[Session] error:', message);
       setSyncStatus(`Error: ${message}`);
     });
 
+    // Register global seek handler for host
+    window.__sessionSeek = (time) => {
+      if (isHostRef.current || user.role === 'admin') {
+        socket.emit('playback-update', { sessionId: id, currentPosition: time });
+      }
+    };
+
     return () => {
+      window.__sessionSeek = null;
       socket.emit('leave-session', { sessionId: id });
       socket.disconnect();
     };
@@ -175,9 +181,10 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     socketRef.current?.emit('playback-update', { sessionId: id, isPlaying: next });
   };
 
+  // Only host can change songs
   const handleChangeSong = (song) => {
     if (!isHostRef.current && user.role !== 'admin') return;
-    console.log('[Session] Host changing song to:', song.title);
+    console.log('[Session] Changing song to:', song.title);
     socketRef.current?.emit('change-song', { sessionId: id, songId: song.id });
   };
 
@@ -282,7 +289,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                     <div style={{
                       width: 8, height: 8, borderRadius: '50%',
                       background: isPlaying ? 'var(--accent)' : 'var(--muted)',
-                      animation: isPlaying ? 'pulse 1s infinite' : 'none',
                     }} />
                     <span style={{
                       fontSize: 13, fontWeight: 600,
@@ -301,7 +307,9 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             <div className="empty-state">
               <div style={{ fontSize: 48 }}>🎵</div>
               <p style={{ marginBottom: 8 }}>
-                {isHost ? 'Click a song in the Queue to start' : 'Waiting for host to start playing...'}
+                {isHost
+                  ? 'Click a song in the Queue tab to start playing for everyone'
+                  : 'Waiting for host to start playing...'}
               </p>
               <p style={{ fontSize: 12, color: 'var(--muted)' }}>{syncStatus}</p>
             </div>
@@ -339,9 +347,12 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
               )}
               {songs.map(song => (
                 <div key={song.id}
-                  className={`queue-item ${currentSong?.id === song.id ? 'active' : ''} ${!isHost && user.role !== 'admin' ? 'disabled' : ''}`}
+                  className={`queue-item ${currentSong?.id === song.id ? 'active' : ''}`}
                   onClick={() => handleChangeSong(song)}
-                  style={{ cursor: isHost || user.role === 'admin' ? 'pointer' : 'default' }}>
+                  style={{
+                    cursor: (isHost || user.role === 'admin') ? 'pointer' : 'default',
+                    opacity: (!isHost && user.role !== 'admin') ? 0.6 : 1,
+                  }}>
                   <img
                     src={song.cover_url ||
                       `https://ui-avatars.com/api/?name=${encodeURIComponent(song.title)}&background=7c3aed&color=fff&size=40`}
@@ -368,10 +379,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             <div className="panel-chat">
               <div className="chat-messages">
                 {messages.length === 0 && (
-                  <p style={{
-                    fontSize: 12, color: 'var(--muted)',
-                    textAlign: 'center', padding: 20
-                  }}>
+                  <p style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'center', padding: 20 }}>
                     No messages yet. Say something!
                   </p>
                 )}

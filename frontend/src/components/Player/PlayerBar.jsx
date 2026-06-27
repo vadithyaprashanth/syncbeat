@@ -23,15 +23,15 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
     if (!audioRef.current) return;
     audioRef.current.play()
       .then(() => console.log('[PlayerBar] play() succeeded'))
-      .catch(e => console.warn('[PlayerBar] play() failed:', e.message));
+      .catch(e => console.warn('[PlayerBar] play() blocked:', e.message));
   };
 
-  // ── Load song whenever URL changes ───────────────────────────────────
+  // Load new song when URL changes
   useEffect(() => {
     if (!song?.cloudinary_url || !audioRef.current) return;
-    if (loadedUrlRef.current === song.cloudinary_url) return; // already loaded
+    if (loadedUrlRef.current === song.cloudinary_url) return;
 
-    console.log('[PlayerBar] Loading new URL:', song.cloudinary_url);
+    console.log('[PlayerBar] Loading:', song.title);
     loadedUrlRef.current = song.cloudinary_url;
     shouldPlayRef.current = isPlaying;
     playCountedRef.current = false;
@@ -43,24 +43,10 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
     setDuration(0);
   }, [song?.cloudinary_url]);
 
-  // ── Play/pause when isPlaying changes ────────────────────────────────
+  // Handle play/pause
   useEffect(() => {
     if (!audioRef.current || !song) return;
     shouldPlayRef.current = isPlaying;
-
-    // If audio src not loaded yet, set it now
-    if (song.cloudinary_url && audioRef.current.src !== song.cloudinary_url &&
-        !audioRef.current.src.includes(song.cloudinary_url.split('/').pop())) {
-      console.log('[PlayerBar] Setting src from isPlaying effect');
-      audioRef.current.src = song.cloudinary_url;
-      audioRef.current.load();
-      loadedUrlRef.current = song.cloudinary_url;
-      if (isPlaying) {
-        // wait for canplay
-        return;
-      }
-    }
-
     if (isPlaying) {
       tryPlay();
     } else {
@@ -68,20 +54,20 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
     }
   }, [isPlaying]);
 
-  // ── Seek ──────────────────────────────────────────────────────────────
+  // Handle external seek from sync
   useEffect(() => {
     if (seekTo !== null && seekTo !== undefined && seekTo > 0 && audioRef.current) {
       audioRef.current.currentTime = seekTo;
+      setCurrent(seekTo);
     }
   }, [seekTo]);
 
-  // ── Volume ────────────────────────────────────────────────────────────
+  // Volume
   useEffect(() => {
     if (audioRef.current) audioRef.current.volume = muted ? 0 : volume;
   }, [volume, muted]);
 
   const handleCanPlay = () => {
-    console.log('[PlayerBar] canplay. shouldPlay:', shouldPlayRef.current);
     if (shouldPlayRef.current) tryPlay();
   };
 
@@ -100,6 +86,8 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
     const t = pct * duration;
     if (audioRef.current) audioRef.current.currentTime = t;
     setCurrent(t);
+    // Broadcast seek to all session members if host
+    if (window.__sessionSeek) window.__sessionSeek(t);
   };
 
   if (!song) return null;
@@ -115,8 +103,9 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
         onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
         onCanPlay={handleCanPlay}
         onEnded={onNext}
-        onError={(e) => console.error('[PlayerBar] Audio error:', audioRef.current?.error)}
+        onError={(e) => console.error('[PlayerBar] Audio error:', audioRef.current?.error?.message)}
       />
+
       <div className="player-info">
         <img src={cover} alt={song.title} className="player-cover" />
         <div>
@@ -124,6 +113,7 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
           <p className="player-artist">{song.artist || 'Unknown'}</p>
         </div>
       </div>
+
       <div className="player-controls">
         <div className="player-buttons">
           <button className="ctrl-btn" onClick={onPrev}>⏮</button>
@@ -141,6 +131,7 @@ const PlayerBar = ({ song, isPlaying, setIsPlaying, onNext, onPrev, seekTo }) =>
           <span className="time">{fmt(duration)}</span>
         </div>
       </div>
+
       <div className="player-volume">
         <button className="ctrl-btn" onClick={() => setMuted(!muted)}>
           {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
