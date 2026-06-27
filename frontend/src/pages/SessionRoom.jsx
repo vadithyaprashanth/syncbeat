@@ -20,6 +20,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
   const [activeTab, setActiveTab] = useState('queue');
   const [copied, setCopied] = useState('');
   const [syncStatus, setSyncStatus] = useState('Connecting...');
+  const [sessionEnded, setSessionEnded] = useState(false);
 
   const socketRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -29,9 +30,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   useEffect(() => {
     if (!token) return;
-
     const SOCKET_URL = process.env.REACT_APP_SOCKET_URL || 'http://localhost:5000';
-    console.log('[Session] Connecting to:', SOCKET_URL);
 
     const socket = io(SOCKET_URL, {
       auth: { token },
@@ -44,13 +43,11 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     socketRef.current = socket;
 
     socket.on('connect', () => {
-      console.log('[Session] Socket connected:', socket.id);
       setSyncStatus('Connected');
       socket.emit('join-session', { sessionId: id });
     });
 
     socket.on('session-state', (data) => {
-      console.log('[Session] session-state:', data.name, '| song:', data.currentSong?.title, '| playing:', data.is_playing);
       setSession(data);
       const hostStatus = data.host_id === user.id;
       setIsHost(hostStatus);
@@ -61,9 +58,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
         setCurrentSong({ ...data.currentSong });
         setTimeout(() => {
           setIsPlaying(data.is_playing || false);
-          if (data.current_position > 2 && setSeekTo) {
-            setSeekTo(data.current_position);
-          }
+          if (data.current_position > 2 && setSeekTo) setSeekTo(data.current_position);
         }, 500);
       } else {
         setSyncStatus('Waiting for host to play a song');
@@ -90,44 +85,35 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     });
 
     socket.on('playback-sync', ({ isPlaying: ip, currentPosition }) => {
-      console.log('[Session] playback-sync:', ip, currentPosition);
       setSyncStatus(ip ? 'Playing' : 'Paused');
       if (ip !== undefined) setIsPlaying(ip);
       if (currentPosition !== undefined && setSeekTo) setSeekTo(currentPosition);
     });
 
     socket.on('song-changed', ({ song, changedBy }) => {
-      console.log('[Session] song-changed:', song.title, song.cloudinary_url?.substring(0, 50));
       setSyncStatus(`Now: ${song.title}`);
       setCurrentSong({ ...song });
       setTimeout(() => setIsPlaying(true), 300);
       if (changedBy !== user.name) addSystemMsg(`Now playing: ${song.title}`);
     });
 
+    // ✅ Session ended by host — kick all members out
+    socket.on('session-ended', () => {
+      setSessionEnded(true);
+      setCurrentSong(null);
+      setIsPlaying(false);
+      setTimeout(() => navigate('/sync'), 3000);
+    });
+
     socket.on('chat-message', (msg) => setMessages(m => [...m, msg]));
-
-    socket.on('connect_error', (err) => {
-      console.error('[Session] connect_error:', err.message);
-      setSyncStatus('Connection error - retrying...');
-    });
-
-    socket.on('disconnect', (reason) => {
-      console.log('[Session] disconnected:', reason);
-      setSyncStatus('Disconnected - reconnecting...');
-    });
-
+    socket.on('connect_error', () => setSyncStatus('Reconnecting...'));
+    socket.on('disconnect', () => setSyncStatus('Disconnected...'));
     socket.on('reconnect', () => {
-      console.log('[Session] reconnected');
       setSyncStatus('Reconnected');
       socket.emit('join-session', { sessionId: id });
     });
+    socket.on('error', ({ message }) => setSyncStatus(`Error: ${message}`));
 
-    socket.on('error', ({ message }) => {
-      console.error('[Session] error:', message);
-      setSyncStatus(`Error: ${message}`);
-    });
-
-    // Register global seek handler for host
     window.__sessionSeek = (time) => {
       if (isHostRef.current || user.role === 'admin') {
         socket.emit('playback-update', { sessionId: id, currentPosition: time });
@@ -155,7 +141,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
         setIsHost(hostStatus);
         isHostRef.current = hostStatus;
       } catch (err) {
-        console.error('Failed to load session:', err);
         navigate('/sync');
       } finally {
         setLoading(false);
@@ -181,10 +166,8 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     socketRef.current?.emit('playback-update', { sessionId: id, isPlaying: next });
   };
 
-  // Only host can change songs
   const handleChangeSong = (song) => {
     if (!isHostRef.current && user.role !== 'admin') return;
-    console.log('[Session] Changing song to:', song.title);
     socketRef.current?.emit('change-song', { sessionId: id, songId: song.id });
   };
 
@@ -204,6 +187,8 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   const handleEnd = async () => {
     if (!window.confirm('End this session for everyone?')) return;
+    // Notify all members before ending
+    socketRef.current?.emit('end-session', { sessionId: id });
     await api.delete(`/sessions/${id}`).catch(() => {});
     setCurrentSong(null);
     setIsPlaying(false);
@@ -221,153 +206,236 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   if (loading) return <div className="page-loader"><div className="spinner" /></div>;
 
+  // Session ended overlay
+  if (sessionEnded) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '100vh', gap: 16,
+        background: 'var(--bg)',
+      }}>
+        <div style={{ fontSize: 64 }}>🎵</div>
+        <h2 className="font-display" style={{ fontSize: 24, color: 'var(--purple-light)' }}>
+          Session Ended
+        </h2>
+        <p className="text-muted">The host ended this session. Redirecting you...</p>
+        <div className="spinner" style={{ marginTop: 16 }} />
+      </div>
+    );
+  }
+
   return (
     <div className="session-room">
-      <div className="session-room-header">
+      {/* ── Header ── */}
+      <div className="session-room-header" style={{
+        background: 'linear-gradient(135deg, rgba(124,58,237,0.08) 0%, var(--bg2) 60%)',
+        borderBottom: '1px solid var(--border)',
+      }}>
         <div>
-          <div className="flex items-center gap-1" style={{ flexWrap: 'wrap', gap: 8 }}>
-            <div className="session-live-dot" />
-            <h1 className="font-display" style={{ fontSize: 20 }}>{session?.name}</h1>
-            {isHost && <span className="badge badge-purple">HOST</span>}
+          <div className="flex items-center" style={{ gap: 10, flexWrap: 'wrap' }}>
+            <div style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)',
+              animation: 'pulse 2s infinite',
+              flexShrink: 0,
+            }} />
+            <h1 className="font-display" style={{ fontSize: 20, margin: 0 }}>{session?.name}</h1>
+            {isHost && (
+              <span style={{
+                background: 'var(--purple-dim)', color: 'var(--purple-light)',
+                borderRadius: 99, padding: '2px 10px', fontSize: 11, fontWeight: 700,
+              }}>HOST</span>
+            )}
             {session?.code && (
               <span onClick={() => copyText(session.code, 'code')} style={{
-                background: 'var(--purple-dim)', color: 'var(--purple-light)',
-                borderRadius: 6, padding: '2px 12px', fontSize: 14,
-                letterSpacing: 4, fontWeight: 900, cursor: 'pointer',
+                background: 'rgba(255,255,255,0.05)', color: 'var(--muted)',
+                borderRadius: 6, padding: '3px 12px', fontSize: 13,
+                letterSpacing: 5, fontWeight: 800, cursor: 'pointer',
+                border: '1px solid var(--border)', transition: 'all 0.2s',
               }}>
                 {session.code} {copied === 'code' ? '✓' : ''}
               </span>
             )}
           </div>
-          <p className="text-muted" style={{ fontSize: 13, marginTop: 4 }}>
+          <p style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
             Hosted by {session?.host_name} · {members.length} listening
           </p>
         </div>
-        <div className="flex gap-1" style={{ flexWrap: 'wrap' }}>
+        <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-sm"
-            onClick={() => copyText(session?.code || '', 'code')}>
-            {copied === 'code' ? 'Copied!' : 'Copy Code'}
+            onClick={() => copyText(session?.code || '', 'code')}
+            style={{ fontSize: 12 }}>
+            {copied === 'code' ? '✓ Copied' : 'Copy Code'}
           </button>
           <button className="btn btn-ghost btn-sm"
-            onClick={() => copyText(window.location.href, 'link')}>
-            {copied === 'link' ? 'Copied!' : 'Copy Link'}
+            onClick={() => copyText(window.location.href, 'link')}
+            style={{ fontSize: 12 }}>
+            {copied === 'link' ? '✓ Copied' : 'Copy Link'}
           </button>
           {(isHost || user.role === 'admin') && (
-            <button className="btn btn-danger btn-sm" onClick={handleEnd}>End Session</button>
+            <button className="btn btn-danger btn-sm" onClick={handleEnd}
+              style={{ fontSize: 12 }}>End Session</button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={handleLeave}>Leave</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleLeave}
+            style={{ fontSize: 12 }}>Leave</button>
         </div>
       </div>
 
       <div className="session-room-body">
-        <div className="session-now-playing">
-          {currentSong ? (
-            <>
-              <img
-                src={currentSong.cover_url ||
-                  `https://ui-avatars.com/api/?name=${encodeURIComponent(currentSong.title)}&background=7c3aed&color=fff&size=200`}
-                alt={currentSong.title}
-                className="now-playing-cover"
-              />
-              <h2 className="font-display" style={{ fontSize: 22, marginBottom: 4 }}>
-                {currentSong.title}
-              </h2>
-              <p className="text-muted">{currentSong.artist || 'Unknown Artist'}</p>
+        {/* ── Now Playing ── */}
+        <div className="session-now-playing" style={{ position: 'relative', overflow: 'hidden' }}>
+          {/* Background blur effect */}
+          {currentSong?.cover_url && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 0,
+              backgroundImage: `url(${currentSong.cover_url})`,
+              backgroundSize: 'cover', backgroundPosition: 'center',
+              filter: 'blur(40px) brightness(0.15)',
+              transform: 'scale(1.2)',
+            }} />
+          )}
 
-              {(isHost || user.role === 'admin') ? (
-                <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={handlePlayPause}>
-                  {isPlaying ? 'Pause for Everyone' : 'Play for Everyone'}
-                </button>
-              ) : (
-                <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            {currentSong ? (
+              <>
+                <img
+                  src={currentSong.cover_url ||
+                    `https://ui-avatars.com/api/?name=${encodeURIComponent(currentSong.title)}&background=7c3aed&color=fff&size=200`}
+                  alt={currentSong.title}
+                  style={{
+                    width: 200, height: 200, borderRadius: 16, objectFit: 'cover',
+                    marginBottom: 24,
+                    boxShadow: '0 24px 64px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)',
+                  }}
+                />
+                <h2 className="font-display" style={{
+                  fontSize: 24, marginBottom: 4, textAlign: 'center',
+                  textShadow: '0 2px 8px rgba(0,0,0,0.5)',
+                }}>
+                  {currentSong.title}
+                </h2>
+                <p style={{ color: 'var(--muted)', fontSize: 14, marginBottom: 20 }}>
+                  {currentSong.artist || 'Unknown Artist'}
+                </p>
+
+                {(isHost || user.role === 'admin') ? (
+                  <button
+                    onClick={handlePlayPause}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      background: isPlaying
+                        ? 'rgba(239,68,68,0.15)'
+                        : 'var(--purple)',
+                      border: `1px solid ${isPlaying ? 'rgba(239,68,68,0.4)' : 'transparent'}`,
+                      color: isPlaying ? '#fca5a5' : '#fff',
+                      borderRadius: 10, padding: '10px 24px',
+                      fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                      transition: 'all 0.2s',
+                    }}>
+                    {isPlaying ? '⏸ Pause for Everyone' : '▶ Play for Everyone'}
+                  </button>
+                ) : (
                   <div style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 8,
-                    background: isPlaying ? 'rgba(6,214,160,0.1)' : 'rgba(124,58,237,0.1)',
-                    border: `1px solid ${isPlaying ? 'var(--accent)' : 'var(--purple)'}`,
-                    borderRadius: 8, padding: '8px 16px',
+                    display: 'inline-flex', alignItems: 'center', gap: 10,
+                    background: isPlaying ? 'rgba(6,214,160,0.1)' : 'rgba(107,114,128,0.1)',
+                    border: `1px solid ${isPlaying ? 'rgba(6,214,160,0.3)' : 'rgba(107,114,128,0.2)'}`,
+                    borderRadius: 10, padding: '10px 20px',
                   }}>
                     <div style={{
                       width: 8, height: 8, borderRadius: '50%',
                       background: isPlaying ? 'var(--accent)' : 'var(--muted)',
+                      animation: isPlaying ? 'pulse 1s infinite' : 'none',
+                      flexShrink: 0,
                     }} />
-                    <span style={{
-                      fontSize: 13, fontWeight: 600,
-                      color: isPlaying ? 'var(--accent)' : 'var(--muted)'
-                    }}>
-                      {syncStatus}
-                    </span>
+                    <div>
+                      <p style={{ fontSize: 13, fontWeight: 600, color: isPlaying ? 'var(--accent)' : 'var(--muted)', margin: 0 }}>
+                        {syncStatus}
+                      </p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>
+                        Host controls playback
+                      </p>
+                    </div>
                   </div>
-                  <p className="text-muted" style={{ fontSize: 11, marginTop: 8 }}>
-                    Host controls playback for everyone
-                  </p>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="empty-state">
-              <div style={{ fontSize: 48 }}>🎵</div>
-              <p style={{ marginBottom: 8 }}>
-                {isHost
-                  ? 'Click a song in the Queue tab to start playing for everyone'
-                  : 'Waiting for host to start playing...'}
-              </p>
-              <p style={{ fontSize: 12, color: 'var(--muted)' }}>{syncStatus}</p>
-            </div>
-          )}
+                )}
+              </>
+            ) : (
+              <div style={{ textAlign: 'center', padding: 40 }}>
+                <div style={{ fontSize: 56, marginBottom: 16, opacity: 0.4 }}>🎵</div>
+                <p style={{ color: 'var(--muted)', marginBottom: 8 }}>
+                  {isHost ? 'Pick a song from the Queue to start' : 'Waiting for host to start playing...'}
+                </p>
+                <p style={{ fontSize: 12, color: 'rgba(107,114,128,0.6)' }}>{syncStatus}</p>
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="session-panel">
-          <div className="panel-tabs">
+        {/* ── Side Panel ── */}
+        <div className="session-panel" style={{ background: 'var(--bg2)' }}>
+          <div className="panel-tabs" style={{ padding: '0 4px' }}>
             {['queue', 'chat', 'members'].map(tab => (
               <button key={tab}
                 className={`panel-tab ${activeTab === tab ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab)}>
-                {tab === 'queue' ? 'Queue'
+                onClick={() => setActiveTab(tab)}
+                style={{ fontSize: 12 }}>
+                {tab === 'queue' ? `Queue (${songs.length})`
                   : tab === 'chat' ? `Chat (${messages.filter(m => !m.system).length})`
                   : `Members (${members.length})`}
               </button>
             ))}
           </div>
 
+          {/* Queue */}
           {activeTab === 'queue' && (
             <div className="panel-content">
               {!isHost && user.role !== 'admin' && (
-                <p style={{
-                  fontSize: 11, color: 'var(--muted)',
-                  padding: '8px 12px', borderBottom: '1px solid var(--border)',
-                  background: 'var(--bg3)',
+                <div style={{
+                  padding: '8px 12px', fontSize: 11, color: 'var(--muted)',
+                  background: 'rgba(124,58,237,0.05)',
+                  borderBottom: '1px solid var(--border)',
+                  display: 'flex', alignItems: 'center', gap: 6,
                 }}>
+                  <span style={{ opacity: 0.6 }}>🔒</span>
                   Only the host can select songs
-                </p>
-              )}
-              {songs.length === 0 && (
-                <p className="text-muted" style={{ padding: 16, fontSize: 13 }}>
-                  No songs in library.
-                </p>
+                </div>
               )}
               {songs.map(song => (
                 <div key={song.id}
-                  className={`queue-item ${currentSong?.id === song.id ? 'active' : ''}`}
                   onClick={() => handleChangeSong(song)}
                   style={{
-                    cursor: (isHost || user.role === 'admin') ? 'pointer' : 'default',
-                    opacity: (!isHost && user.role !== 'admin') ? 0.6 : 1,
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px', cursor: (isHost || user.role === 'admin') ? 'pointer' : 'default',
+                    background: currentSong?.id === song.id ? 'rgba(124,58,237,0.12)' : 'transparent',
+                    borderLeft: currentSong?.id === song.id ? '2px solid var(--purple)' : '2px solid transparent',
+                    transition: 'all 0.15s',
+                    opacity: (!isHost && user.role !== 'admin') ? 0.65 : 1,
+                  }}
+                  onMouseEnter={e => {
+                    if (isHost || user.role === 'admin') e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
+                  }}
+                  onMouseLeave={e => {
+                    e.currentTarget.style.background = currentSong?.id === song.id ? 'rgba(124,58,237,0.12)' : 'transparent';
                   }}>
                   <img
                     src={song.cover_url ||
                       `https://ui-avatars.com/api/?name=${encodeURIComponent(song.title)}&background=7c3aed&color=fff&size=40`}
-                    alt="" className="queue-cover"
+                    alt="" style={{ width: 36, height: 36, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }}
                   />
                   <div style={{ flex: 1, overflow: 'hidden' }}>
                     <p style={{
-                      fontSize: 13, fontWeight: 600,
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                      fontSize: 13, fontWeight: currentSong?.id === song.id ? 700 : 500,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      color: currentSong?.id === song.id ? 'var(--purple-light)' : 'var(--text)',
+                      margin: 0,
                     }}>{song.title}</p>
-                    <p style={{ fontSize: 12, color: 'var(--muted)' }}>{song.artist || 'Unknown'}</p>
+                    <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{song.artist || 'Unknown'}</p>
                   </div>
                   {currentSong?.id === song.id && (
-                    <span style={{ color: 'var(--accent)', fontSize: 11, fontWeight: 700 }}>
-                      {isPlaying ? 'PLAYING' : 'PAUSED'}
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, color: 'var(--accent)',
+                      background: 'rgba(6,214,160,0.1)', borderRadius: 4, padding: '2px 6px',
+                    }}>
+                      {isPlaying ? 'NOW' : 'PAUSED'}
                     </span>
                   )}
                 </div>
@@ -375,23 +443,38 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             </div>
           )}
 
+          {/* Chat */}
           {activeTab === 'chat' && (
             <div className="panel-chat">
               <div className="chat-messages">
                 {messages.length === 0 && (
-                  <p style={{ fontSize: 12, color: 'var(--muted)', textAlign: 'center', padding: 20 }}>
-                    No messages yet. Say something!
-                  </p>
+                  <div style={{ textAlign: 'center', padding: '40px 20px', color: 'var(--muted)' }}>
+                    <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.4 }}>💬</div>
+                    <p style={{ fontSize: 12 }}>No messages yet</p>
+                  </div>
                 )}
                 {messages.map(msg => (
-                  <div key={msg.id} className={`chat-msg ${msg.system ? 'system' : ''}`}>
+                  <div key={msg.id} style={{ marginBottom: 8 }}>
                     {msg.system ? (
-                      <p className="system-msg">{msg.message}</p>
+                      <p style={{
+                        fontSize: 11, color: 'var(--muted)', textAlign: 'center',
+                        fontStyle: 'italic', margin: '4px 0',
+                      }}>{msg.message}</p>
                     ) : (
-                      <div style={{ width: '100%' }}>
-                        <div className="flex justify-between items-center" style={{ marginBottom: 2 }}>
-                          <span className="chat-author" style={{
-                            color: msg.userId === user.id ? 'var(--accent)' : 'var(--purple-light)'
+                      <div style={{
+                        background: msg.userId === user.id
+                          ? 'rgba(124,58,237,0.12)'
+                          : 'rgba(255,255,255,0.04)',
+                        borderRadius: 8,
+                        padding: '8px 10px',
+                        borderLeft: msg.userId === user.id
+                          ? '2px solid var(--purple)'
+                          : '2px solid transparent',
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                          <span style={{
+                            fontSize: 11, fontWeight: 700,
+                            color: msg.userId === user.id ? 'var(--purple-light)' : 'var(--accent)',
                           }}>
                             {msg.userId === user.id ? 'You' : msg.userName}
                           </span>
@@ -399,36 +482,56 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                             {formatTime(msg.createdAt)}
                           </span>
                         </div>
-                        <span className="chat-text">{msg.message}</span>
+                        <p style={{ fontSize: 13, margin: 0, lineHeight: 1.4, wordBreak: 'break-word' }}>
+                          {msg.message}
+                        </p>
                       </div>
                     )}
                   </div>
                 ))}
                 <div ref={chatEndRef} />
               </div>
-              <form className="chat-input-row" onSubmit={handleSendChat}>
-                <input className="input" style={{ flex: 1, fontSize: 13 }}
-                  placeholder="Type a message..."
+              <form className="chat-input-row" onSubmit={handleSendChat}
+                style={{ padding: 10, borderTop: '1px solid var(--border)', gap: 8 }}>
+                <input className="input" style={{ flex: 1, fontSize: 13, borderRadius: 8 }}
+                  placeholder="Message..."
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)} />
-                <button type="submit" className="btn btn-primary btn-sm">Send</button>
+                <button type="submit" className="btn btn-primary btn-sm"
+                  style={{ borderRadius: 8, flexShrink: 0 }}>Send</button>
               </form>
             </div>
           )}
 
+          {/* Members */}
           {activeTab === 'members' && (
             <div className="panel-content">
               {members.map(m => (
-                <div key={m.id} className="member-item">
-                  <div className="user-avatar" style={{ width: 32, height: 32, fontSize: 12 }}>
+                <div key={m.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  padding: '10px 12px', borderRadius: 8,
+                  transition: 'background 0.15s',
+                }}>
+                  <div style={{
+                    width: 34, height: 34, borderRadius: '50%',
+                    background: session?.host_id === m.id
+                      ? 'linear-gradient(135deg, var(--purple), var(--purple-light))'
+                      : 'var(--bg3)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 700, color: '#fff',
+                    flexShrink: 0, border: '1px solid var(--border)',
+                  }}>
                     {m.name?.[0]?.toUpperCase()}
                   </div>
                   <div>
-                    <p style={{ fontSize: 13, fontWeight: 500 }}>{m.name}</p>
+                    <p style={{ fontSize: 13, fontWeight: 500, margin: 0 }}>{m.name}</p>
                     {session?.host_id === m.id && (
-                      <span className="badge badge-purple" style={{ fontSize: 10 }}>HOST</span>
+                      <span style={{ fontSize: 10, color: 'var(--purple-light)', fontWeight: 700 }}>HOST</span>
                     )}
                   </div>
+                  {session?.host_id === m.id && (
+                    <div style={{ marginLeft: 'auto', fontSize: 14 }}>🎧</div>
+                  )}
                 </div>
               ))}
             </div>
