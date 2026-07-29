@@ -12,7 +12,7 @@ import Auth from './pages/Auth';
 import './App.css';
 import './pages/pages.css';
 
-// Suppress unhandled 401 promise errors from showing as overlays
+// Suppress unhandled 401/403 promise errors
 window.addEventListener('unhandledrejection', (e) => {
   if (e.reason?.response?.status === 401 || e.reason?.response?.status === 403) {
     e.preventDefault();
@@ -40,14 +40,24 @@ const ProtectedLayout = () => {
     if (!queue.length || !currentSong) return;
     const idx = queue.findIndex(s => s.id === currentSong.id);
     const next = queue[(idx + 1) % queue.length];
-    if (next) { setCurrentSong(next); setIsPlaying(true); }
+    if (next) {
+      setCurrentSong(next);
+      setIsPlaying(true);
+      // Sync to session members if host is in a room
+      if (window.__sessionChangeSong) window.__sessionChangeSong(next.id);
+    }
   };
 
   const handlePrev = () => {
     if (!queue.length || !currentSong) return;
     const idx = queue.findIndex(s => s.id === currentSong.id);
     const prev = queue[(idx - 1 + queue.length) % queue.length];
-    if (prev) { setCurrentSong(prev); setIsPlaying(true); }
+    if (prev) {
+      setCurrentSong(prev);
+      setIsPlaying(true);
+      // Sync to session members if host is in a room
+      if (window.__sessionChangeSong) window.__sessionChangeSong(prev.id);
+    }
   };
 
   return (

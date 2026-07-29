@@ -97,7 +97,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
       if (changedBy !== user.name) addSystemMsg(`Now playing: ${song.title}`);
     });
 
-    // ✅ Session ended by host — kick all members out
     socket.on('session-ended', () => {
       setSessionEnded(true);
       setCurrentSong(null);
@@ -114,14 +113,25 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
     });
     socket.on('error', ({ message }) => setSyncStatus(`Error: ${message}`));
 
+    // ── Global hooks for PlayerBar integration ─────────────────────────
+    // Seek sync — only fires for host
     window.__sessionSeek = (time) => {
       if (isHostRef.current || user.role === 'admin') {
         socket.emit('playback-update', { sessionId: id, currentPosition: time });
       }
     };
 
+    // Song change via next/prev buttons — only fires for host
+    window.__sessionChangeSong = (songId) => {
+      if (isHostRef.current || user.role === 'admin') {
+        console.log('[Session] PlayerBar next/prev -> change-song:', songId);
+        socket.emit('change-song', { sessionId: id, songId });
+      }
+    };
+
     return () => {
       window.__sessionSeek = null;
+      window.__sessionChangeSong = null;
       socket.emit('leave-session', { sessionId: id });
       socket.disconnect();
     };
@@ -187,7 +197,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   const handleEnd = async () => {
     if (!window.confirm('End this session for everyone?')) return;
-    // Notify all members before ending
     socketRef.current?.emit('end-session', { sessionId: id });
     await api.delete(`/sessions/${id}`).catch(() => {});
     setCurrentSong(null);
@@ -206,7 +215,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   if (loading) return <div className="page-loader"><div className="spinner" /></div>;
 
-  // Session ended overlay
   if (sessionEnded) {
     return (
       <div style={{
@@ -226,7 +234,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
 
   return (
     <div className="session-room">
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="session-room-header" style={{
         background: 'linear-gradient(135deg, rgba(124,58,237,0.08) 0%, var(--bg2) 60%)',
         borderBottom: '1px solid var(--border)',
@@ -236,8 +244,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             <div style={{
               width: 8, height: 8, borderRadius: '50%',
               background: 'var(--accent)', boxShadow: '0 0 8px var(--accent)',
-              animation: 'pulse 2s infinite',
-              flexShrink: 0,
+              animation: 'pulse 2s infinite', flexShrink: 0,
             }} />
             <h1 className="font-display" style={{ fontSize: 20, margin: 0 }}>{session?.name}</h1>
             {isHost && (
@@ -251,7 +258,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                 background: 'rgba(255,255,255,0.05)', color: 'var(--muted)',
                 borderRadius: 6, padding: '3px 12px', fontSize: 13,
                 letterSpacing: 5, fontWeight: 800, cursor: 'pointer',
-                border: '1px solid var(--border)', transition: 'all 0.2s',
+                border: '1px solid var(--border)',
               }}>
                 {session.code} {copied === 'code' ? '✓' : ''}
               </span>
@@ -263,28 +270,27 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
         </div>
         <div className="flex" style={{ gap: 8, flexWrap: 'wrap' }}>
           <button className="btn btn-ghost btn-sm"
-            onClick={() => copyText(session?.code || '', 'code')}
-            style={{ fontSize: 12 }}>
+            onClick={() => copyText(session?.code || '', 'code')} style={{ fontSize: 12 }}>
             {copied === 'code' ? '✓ Copied' : 'Copy Code'}
           </button>
           <button className="btn btn-ghost btn-sm"
-            onClick={() => copyText(window.location.href, 'link')}
-            style={{ fontSize: 12 }}>
+            onClick={() => copyText(window.location.href, 'link')} style={{ fontSize: 12 }}>
             {copied === 'link' ? '✓ Copied' : 'Copy Link'}
           </button>
           {(isHost || user.role === 'admin') && (
-            <button className="btn btn-danger btn-sm" onClick={handleEnd}
-              style={{ fontSize: 12 }}>End Session</button>
+            <button className="btn btn-danger btn-sm" onClick={handleEnd} style={{ fontSize: 12 }}>
+              End Session
+            </button>
           )}
-          <button className="btn btn-ghost btn-sm" onClick={handleLeave}
-            style={{ fontSize: 12 }}>Leave</button>
+          <button className="btn btn-ghost btn-sm" onClick={handleLeave} style={{ fontSize: 12 }}>
+            Leave
+          </button>
         </div>
       </div>
 
       <div className="session-room-body">
-        {/* ── Now Playing ── */}
+        {/* Now Playing */}
         <div className="session-now-playing" style={{ position: 'relative', overflow: 'hidden' }}>
-          {/* Background blur effect */}
           {currentSong?.cover_url && (
             <div style={{
               position: 'absolute', inset: 0, zIndex: 0,
@@ -294,7 +300,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
               transform: 'scale(1.2)',
             }} />
           )}
-
           <div style={{ position: 'relative', zIndex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
             {currentSong ? (
               <>
@@ -317,21 +322,15 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                 <p style={{ color: 'var(--muted)', fontSize: 14, marginBottom: 20 }}>
                   {currentSong.artist || 'Unknown Artist'}
                 </p>
-
                 {(isHost || user.role === 'admin') ? (
-                  <button
-                    onClick={handlePlayPause}
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      background: isPlaying
-                        ? 'rgba(239,68,68,0.15)'
-                        : 'var(--purple)',
-                      border: `1px solid ${isPlaying ? 'rgba(239,68,68,0.4)' : 'transparent'}`,
-                      color: isPlaying ? '#fca5a5' : '#fff',
-                      borderRadius: 10, padding: '10px 24px',
-                      fontSize: 14, fontWeight: 600, cursor: 'pointer',
-                      transition: 'all 0.2s',
-                    }}>
+                  <button onClick={handlePlayPause} style={{
+                    display: 'flex', alignItems: 'center', gap: 8,
+                    background: isPlaying ? 'rgba(239,68,68,0.15)' : 'var(--purple)',
+                    border: `1px solid ${isPlaying ? 'rgba(239,68,68,0.4)' : 'transparent'}`,
+                    color: isPlaying ? '#fca5a5' : '#fff',
+                    borderRadius: 10, padding: '10px 24px',
+                    fontSize: 14, fontWeight: 600, cursor: 'pointer', transition: 'all 0.2s',
+                  }}>
                     {isPlaying ? '⏸ Pause for Everyone' : '▶ Play for Everyone'}
                   </button>
                 ) : (
@@ -344,16 +343,13 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                     <div style={{
                       width: 8, height: 8, borderRadius: '50%',
                       background: isPlaying ? 'var(--accent)' : 'var(--muted)',
-                      animation: isPlaying ? 'pulse 1s infinite' : 'none',
-                      flexShrink: 0,
+                      animation: isPlaying ? 'pulse 1s infinite' : 'none', flexShrink: 0,
                     }} />
                     <div>
                       <p style={{ fontSize: 13, fontWeight: 600, color: isPlaying ? 'var(--accent)' : 'var(--muted)', margin: 0 }}>
                         {syncStatus}
                       </p>
-                      <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>
-                        Host controls playback
-                      </p>
+                      <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>Host controls playback</p>
                     </div>
                   </div>
                 )}
@@ -370,14 +366,13 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
           </div>
         </div>
 
-        {/* ── Side Panel ── */}
+        {/* Side Panel */}
         <div className="session-panel" style={{ background: 'var(--bg2)' }}>
           <div className="panel-tabs" style={{ padding: '0 4px' }}>
             {['queue', 'chat', 'members'].map(tab => (
               <button key={tab}
                 className={`panel-tab ${activeTab === tab ? 'active' : ''}`}
-                onClick={() => setActiveTab(tab)}
-                style={{ fontSize: 12 }}>
+                onClick={() => setActiveTab(tab)} style={{ fontSize: 12 }}>
                 {tab === 'queue' ? `Queue (${songs.length})`
                   : tab === 'chat' ? `Chat (${messages.filter(m => !m.system).length})`
                   : `Members (${members.length})`}
@@ -385,18 +380,15 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             ))}
           </div>
 
-          {/* Queue */}
           {activeTab === 'queue' && (
             <div className="panel-content">
               {!isHost && user.role !== 'admin' && (
                 <div style={{
                   padding: '8px 12px', fontSize: 11, color: 'var(--muted)',
-                  background: 'rgba(124,58,237,0.05)',
-                  borderBottom: '1px solid var(--border)',
+                  background: 'rgba(124,58,237,0.05)', borderBottom: '1px solid var(--border)',
                   display: 'flex', alignItems: 'center', gap: 6,
                 }}>
-                  <span style={{ opacity: 0.6 }}>🔒</span>
-                  Only the host can select songs
+                  <span style={{ opacity: 0.6 }}>🔒</span> Only the host can select songs
                 </div>
               )}
               {songs.map(song => (
@@ -404,17 +396,12 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                   onClick={() => handleChangeSong(song)}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10,
-                    padding: '8px 12px', cursor: (isHost || user.role === 'admin') ? 'pointer' : 'default',
+                    padding: '8px 12px',
+                    cursor: (isHost || user.role === 'admin') ? 'pointer' : 'default',
                     background: currentSong?.id === song.id ? 'rgba(124,58,237,0.12)' : 'transparent',
                     borderLeft: currentSong?.id === song.id ? '2px solid var(--purple)' : '2px solid transparent',
                     transition: 'all 0.15s',
                     opacity: (!isHost && user.role !== 'admin') ? 0.65 : 1,
-                  }}
-                  onMouseEnter={e => {
-                    if (isHost || user.role === 'admin') e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                  }}
-                  onMouseLeave={e => {
-                    e.currentTarget.style.background = currentSong?.id === song.id ? 'rgba(124,58,237,0.12)' : 'transparent';
                   }}>
                   <img
                     src={song.cover_url ||
@@ -425,8 +412,7 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                     <p style={{
                       fontSize: 13, fontWeight: currentSong?.id === song.id ? 700 : 500,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      color: currentSong?.id === song.id ? 'var(--purple-light)' : 'var(--text)',
-                      margin: 0,
+                      color: currentSong?.id === song.id ? 'var(--purple-light)' : 'var(--text)', margin: 0,
                     }}>{song.title}</p>
                     <p style={{ fontSize: 11, color: 'var(--muted)', margin: 0 }}>{song.artist || 'Unknown'}</p>
                   </div>
@@ -443,7 +429,6 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
             </div>
           )}
 
-          {/* Chat */}
           {activeTab === 'chat' && (
             <div className="panel-chat">
               <div className="chat-messages">
@@ -462,14 +447,9 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                       }}>{msg.message}</p>
                     ) : (
                       <div style={{
-                        background: msg.userId === user.id
-                          ? 'rgba(124,58,237,0.12)'
-                          : 'rgba(255,255,255,0.04)',
-                        borderRadius: 8,
-                        padding: '8px 10px',
-                        borderLeft: msg.userId === user.id
-                          ? '2px solid var(--purple)'
-                          : '2px solid transparent',
+                        background: msg.userId === user.id ? 'rgba(124,58,237,0.12)' : 'rgba(255,255,255,0.04)',
+                        borderRadius: 8, padding: '8px 10px',
+                        borderLeft: msg.userId === user.id ? '2px solid var(--purple)' : '2px solid transparent',
                       }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
                           <span style={{
@@ -497,20 +477,19 @@ const SessionRoom = ({ setCurrentSong, setIsPlaying, isPlaying, currentSong, set
                   placeholder="Message..."
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)} />
-                <button type="submit" className="btn btn-primary btn-sm"
-                  style={{ borderRadius: 8, flexShrink: 0 }}>Send</button>
+                <button type="submit" className="btn btn-primary btn-sm" style={{ borderRadius: 8, flexShrink: 0 }}>
+                  Send
+                </button>
               </form>
             </div>
           )}
 
-          {/* Members */}
           {activeTab === 'members' && (
             <div className="panel-content">
               {members.map(m => (
                 <div key={m.id} style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '10px 12px', borderRadius: 8,
-                  transition: 'background 0.15s',
                 }}>
                   <div style={{
                     width: 34, height: 34, borderRadius: '50%',
